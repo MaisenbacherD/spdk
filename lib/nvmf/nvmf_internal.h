@@ -165,6 +165,9 @@ struct spdk_nvmf_ns {
 	bool ptpl_activated;
 	/* ZCOPY supported on bdev device */
 	bool zcopy;
+	/* Command Set Identifier */
+	//enum spdk_nvme_csi csi;
+	uint8_t csi;
 };
 
 /*
@@ -265,6 +268,7 @@ struct spdk_nvmf_subsystem {
 
 	struct spdk_nvmf_tgt				*tgt;
 
+	uint32_t max_zone_append_size;
 	/* Array of pointers to namespaces of size max_nsid indexed by nsid - 1 */
 	struct spdk_nvmf_ns				**ns;
 	uint32_t					max_nsid;

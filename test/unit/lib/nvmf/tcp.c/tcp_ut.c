@@ -7,6 +7,7 @@
 #include "spdk/stdinc.h"
 #include "spdk/nvmf_spec.h"
 #include "spdk_cunit.h"
+#include "spdk/bdev_zone.h"
 
 #include "spdk_internal/mock.h"
 
@@ -32,6 +33,14 @@ static void *g_accel_p = (void *)0xdeadbeaf;
 
 SPDK_LOG_REGISTER_COMPONENT(nvmf)
 
+DEFINE_STUB(spdk_bdev_get_max_zone_append_size, uint32_t,
+	    (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_get_max_active_zones, uint32_t,
+	    (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_get_max_open_zones, uint32_t,
+	    (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_is_zoned, bool, (const struct spdk_bdev *bdev), false);
+DEFINE_STUB(spdk_bdev_get_zone_size, uint64_t, (const struct spdk_bdev *bdev), 0);
 DEFINE_STUB(spdk_nvmf_qpair_get_listen_trid,
 	    int,
 	    (struct spdk_nvmf_qpair *qpair, struct spdk_nvme_transport_id *trid),

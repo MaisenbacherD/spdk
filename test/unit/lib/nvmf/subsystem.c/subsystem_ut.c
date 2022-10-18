@@ -29,6 +29,12 @@ DEFINE_STUB(spdk_bdev_get_block_size, uint32_t,
 DEFINE_STUB(spdk_bdev_get_md_size, uint32_t,
 	    (const struct spdk_bdev *bdev), 0);
 
+DEFINE_STUB(spdk_bdev_is_zoned, bool,
+	    (const struct spdk_bdev *bdev), false);
+
+DEFINE_STUB(spdk_bdev_get_max_zone_append_size, uint32_t,
+	    (const struct spdk_bdev *bdev), 0);
+
 DEFINE_STUB(spdk_bdev_is_md_interleaved, bool,
 	    (const struct spdk_bdev *bdev), false);
 
