@@ -20,6 +20,7 @@ SPDK_LOG_REGISTER_COMPONENT(nvmf)
 DEFINE_STUB(spdk_nvmf_request_complete, int, (struct spdk_nvmf_request *req), -1);
 
 DEFINE_STUB(spdk_bdev_get_name, const char *, (const struct spdk_bdev *bdev), "test");
+DEFINE_STUB(spdk_bdev_is_zoned, bool, (const struct spdk_bdev *bdev), false);
 
 DEFINE_STUB(spdk_bdev_get_physical_block_size, uint32_t,
 	    (const struct spdk_bdev *bdev), 4096);

@@ -4,6 +4,7 @@
  *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
+#include "spdk/bdev.h"
 #include "spdk/stdinc.h"
 
 #include "nvmf_internal.h"
@@ -19,6 +20,7 @@
 #include "spdk/version.h"
 #include "spdk/log.h"
 #include "spdk_internal/usdt.h"
+#include "spdk/bdev_zone.h"
 
 #define MIN_KEEP_ALIVE_TIMEOUT_IN_MS 10000
 #define NVMF_DISC_KATO_IN_MS 120000
@@ -308,6 +310,20 @@ nvmf_ctrlr_cdata_init(struct spdk_nvmf_transport *transport, struct spdk_nvmf_su
 	}
 }
 
+static bool
+_subsystem_contains_zns(struct spdk_nvmf_subsystem *subsystem)
+{
+	struct spdk_nvmf_ns *ns;
+	uint32_t i;
+	for (i = 0; i < subsystem->max_nsid; i++) {
+		ns = subsystem->ns[i];
+		if (ns && ns->bdev && spdk_bdev_is_zoned(ns->bdev)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static struct spdk_nvmf_ctrlr *
 nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 		  struct spdk_nvmf_request *req,
@@ -317,6 +333,7 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 	struct spdk_nvmf_ctrlr *ctrlr;
 	struct spdk_nvmf_transport *transport = req->qpair->transport;
 	struct spdk_nvme_transport_id listen_trid = {};
+	bool subsystem_contains_zns = false;
 
 	ctrlr = calloc(1, sizeof(*ctrlr));
 	if (ctrlr == NULL) {
@@ -414,7 +431,14 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 	/* ready timeout - 500 msec units */
 	ctrlr->vcprop.cap.bits.to = NVMF_CTRLR_RESET_SHN_TIMEOUT_IN_MS / 500;
 	ctrlr->vcprop.cap.bits.dstrd = 0; /* fixed to 0 for NVMe-oF */
-	ctrlr->vcprop.cap.bits.css = SPDK_NVME_CAP_CSS_NVM; /* NVM command set */
+	subsystem_contains_zns = _subsystem_contains_zns(subsystem);
+	if (subsystem_contains_zns) {
+		ctrlr->vcprop.cap.bits.css =
+			SPDK_NVME_CAP_CSS_IOCS; /* One or more I/O command sets supported */
+	} else {
+		ctrlr->vcprop.cap.bits.css = SPDK_NVME_CAP_CSS_NVM; /* NVM command set */
+	}
+
 	ctrlr->vcprop.cap.bits.mpsmin = 0; /* 2 ^ (12 + mpsmin) == 4k */
 	ctrlr->vcprop.cap.bits.mpsmax = 0; /* 2 ^ (12 + mpsmax) == 4k */
 
@@ -425,6 +449,10 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 
 	ctrlr->vcprop.cc.raw = 0;
 	ctrlr->vcprop.cc.bits.en = 0; /* Init controller disabled */
+	if (subsystem_contains_zns) {
+		ctrlr->vcprop.cc.bits.css =
+			SPDK_NVME_CC_CSS_IOCS; /* All supported I/O Command Sets */
+	}
 
 	ctrlr->vcprop.csts.raw = 0;
 	ctrlr->vcprop.csts.bits.rdy = 0; /* Init controller as not ready */
@@ -1163,7 +1191,7 @@ nvmf_prop_set_cc(struct spdk_nvmf_ctrlr *ctrlr, uint32_t value)
 		return false;
 	}
 
-	if (diff.bits.css) {
+	if (diff.bits.css > SPDK_NVME_CAP_CSS_IOCS) {
 		SPDK_ERRLOG("I/O Command Set Selected (CSS) 0x%x not supported!\n", cc.bits.css);
 		return false;
 	}
@@ -2574,22 +2602,16 @@ invalid_log_page:
 	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 }
 
-int
-spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_ctrlr *ctrlr,
-			    struct spdk_nvme_cmd *cmd,
-			    struct spdk_nvme_cpl *rsp,
-			    struct spdk_nvme_ns_data *nsdata)
+static struct spdk_nvmf_ns *
+_nvmf_subsystem_get_ns_for_identify(struct spdk_nvmf_subsystem *subsystem,
+				    struct spdk_nvme_cmd *cmd, struct spdk_nvme_cpl *rsp)
 {
-	struct spdk_nvmf_subsystem *subsystem = ctrlr->subsys;
 	struct spdk_nvmf_ns *ns;
-	uint32_t max_num_blocks;
-	enum spdk_nvme_ana_state ana_state;
-
 	if (cmd->nsid == 0 || cmd->nsid > subsystem->max_nsid) {
 		SPDK_ERRLOG("Identify Namespace for invalid NSID %u\n", cmd->nsid);
 		rsp->status.sct = SPDK_NVME_SCT_GENERIC;
 		rsp->status.sc = SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT;
-		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+		return NULL;
 	}
 
 	ns = _nvmf_subsystem_get_ns(subsystem, cmd->nsid);
@@ -2602,6 +2624,24 @@ spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_ctrlr *ctrlr,
 		SPDK_DEBUGLOG(nvmf, "Identify Namespace for inactive NSID %u\n", cmd->nsid);
 		rsp->status.sct = SPDK_NVME_SCT_GENERIC;
 		rsp->status.sc = SPDK_NVME_SC_SUCCESS;
+		return NULL;
+	}
+	return ns;
+}
+
+int
+spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_ctrlr *ctrlr,
+			    struct spdk_nvme_cmd *cmd,
+			    struct spdk_nvme_cpl *rsp,
+			    struct spdk_nvme_ns_data *nsdata)
+{
+	struct spdk_nvmf_subsystem *subsystem = ctrlr->subsys;
+	struct spdk_nvmf_ns *ns;
+	uint32_t max_num_blocks;
+	enum spdk_nvme_ana_state ana_state;
+
+	ns = _nvmf_subsystem_get_ns_for_identify(subsystem, cmd, rsp);
+	if (ns == NULL) {
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
@@ -2780,6 +2820,90 @@ spdk_nvmf_ctrlr_identify_ctrlr(struct spdk_nvmf_ctrlr *ctrlr, struct spdk_nvme_c
 	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 }
 
+
+int
+spdk_nvmf_ns_identify_iocs_specific(struct spdk_nvmf_ctrlr *ctrlr,
+				    struct spdk_nvme_cmd *cmd,
+				    struct spdk_nvme_cpl *rsp,
+				    struct spdk_nvme_zns_ns_data *cdata_zns)
+{
+	uint32_t csi = cmd->cdw11_bits.identify.csi;
+	struct spdk_nvmf_subsystem *subsystem = ctrlr->subsys;
+	struct spdk_nvmf_ns *ns;
+
+
+	ns = _nvmf_subsystem_get_ns_for_identify(subsystem, cmd, rsp);
+	if (ns == NULL) {
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
+	switch (csi) {
+	case SPDK_NVME_CSI_ZNS:
+		cdata_zns->zoc.variable_zone_capacity = 0;
+		cdata_zns->zoc.zone_active_excursions = 0;
+		cdata_zns->ozcs.read_across_zone_boundaries = 1;
+		// Underflowing the mar and mor bdev helper results in the correct value of FFFFFFFFh.
+		cdata_zns->mar = spdk_bdev_get_max_active_zones(ns->bdev) - 1;
+		cdata_zns->mor = spdk_bdev_get_max_open_zones(ns->bdev) - 1;
+		cdata_zns->rrl = 0;
+		cdata_zns->frl = 0;
+		cdata_zns->lbafe[0].zsze = spdk_bdev_get_zone_size(ns->bdev);
+		break;
+	default:
+		SPDK_DEBUGLOG(nvmf,
+			      "Returning zero filled struct for the iocs specific ns "
+			      "identify command and CSI 0x%02x\n",
+			      csi);
+		break;
+	}
+	rsp->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
+	rsp->status.sc = SPDK_NVME_SC_SUCCESS;
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+}
+
+int
+spdk_nvmf_ctrlr_identify_iocs_specific(
+	struct spdk_nvmf_ctrlr *ctrlr, struct spdk_nvme_cmd *cmd,
+	struct spdk_nvme_cpl *rsp, struct spdk_nvme_zns_ctrlr_data *cdata)
+{
+
+	// TODO: compare with nvme_ctrlr_identify_iocs_specific(struct spdk_nvme_ctrlr
+	// *ctrlr)
+	uint32_t csi = cmd->cdw11_bits.identify.csi;
+	uint32_t max_zone_append_size = 0;
+	uint8_t zasl = 0;
+
+	switch (csi) {
+	case SPDK_NVME_CSI_ZNS:
+		SPDK_WARNLOG("HERE CSI 0x%02x\n", csi);
+		// In logical blocks (4KiB)
+		max_zone_append_size = ctrlr->subsys->max_zone_append_size;
+		SPDK_NOTICELOG("MZAS: %d.\n", max_zone_append_size);
+		max_zone_append_size >>= ctrlr->vcprop.cap.bits.mpsmin;
+		//TODO: compare with nvme_ctrlr.c line 2070
+		// minimum memory page size (CAP.MPSMIN) and is reported as power of two
+		// (2^n)
+		// TODO: completely right?: max_zone_append_size == 503 will evaluate to
+		// 2^8 = 256
+		while (max_zone_append_size >>= 1) {
+			zasl++;
+		}
+		cdata->zasl = zasl;
+		SPDK_WARNLOG("HERE zasl %d\n", cdata->zasl);
+		break;
+	default:
+		SPDK_DEBUGLOG(nvmf,
+			      "Returning zero filled struct for the iocs specific ctrlr "
+			      "identify command and CSI 0x%02x\n",
+			      csi);
+		break;
+	}
+
+	rsp->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
+	rsp->status.sc = SPDK_NVME_SC_SUCCESS;
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+}
+
 static int
 nvmf_ctrlr_identify_active_ns_list(struct spdk_nvmf_subsystem *subsystem,
 				   struct spdk_nvme_cmd *cmd,
@@ -2868,6 +2992,7 @@ nvmf_ctrlr_identify_ns_id_descriptor_list(
 	ADD_ID_DESC(SPDK_NVME_NIDT_EUI64, ns->opts.eui64, sizeof(ns->opts.eui64));
 	ADD_ID_DESC(SPDK_NVME_NIDT_NGUID, ns->opts.nguid, sizeof(ns->opts.nguid));
 	ADD_ID_DESC(SPDK_NVME_NIDT_UUID, &ns->opts.uuid, sizeof(ns->opts.uuid));
+	ADD_ID_DESC(SPDK_NVME_NIDT_CSI, &ns->csi, sizeof(ns->csi));
 
 	/*
 	 * The list is automatically 0-terminated because controller to host buffers in
@@ -2903,6 +3028,7 @@ nvmf_ctrlr_identify(struct spdk_nvmf_request *req)
 		goto invalid_cns;
 	}
 
+	SPDK_NOTICELOG("Identify command with CNS 0x%02x\n", cns);
 	switch (cns) {
 	case SPDK_NVME_IDENTIFY_NS:
 		return spdk_nvmf_ctrlr_identify_ns(ctrlr, cmd, rsp, req->data);
@@ -2912,6 +3038,10 @@ nvmf_ctrlr_identify(struct spdk_nvmf_request *req)
 		return nvmf_ctrlr_identify_active_ns_list(subsystem, cmd, rsp, req->data);
 	case SPDK_NVME_IDENTIFY_NS_ID_DESCRIPTOR_LIST:
 		return nvmf_ctrlr_identify_ns_id_descriptor_list(subsystem, cmd, rsp, req->data, req->length);
+	case SPDK_NVME_IDENTIFY_NS_IOCS:
+		return spdk_nvmf_ns_identify_iocs_specific(ctrlr, cmd, rsp, req->data);
+	case SPDK_NVME_IDENTIFY_CTRLR_IOCS:
+		return spdk_nvmf_ctrlr_identify_iocs_specific(ctrlr, cmd, rsp, req->data);
 	default:
 		goto invalid_cns;
 	}
