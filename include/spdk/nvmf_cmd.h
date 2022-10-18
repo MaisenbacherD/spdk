@@ -54,6 +54,37 @@ int spdk_nvmf_ctrlr_identify_ctrlr(struct spdk_nvmf_ctrlr *ctrlr,
 				   struct spdk_nvme_ctrlr_data *cdata);
 
 /**
+ * Fills the I/O Command Set specific Identify Namespace data structure (CNS
+ * 05h)
+ *
+ * \param ctrlr The NVMe-oF controller
+ * \param cmd The NVMe command
+ * \param rsp The NVMe command completion
+ * \param cdata The filled in I/O command set specific identify namespace
+ * attributes
+ * \return \ref spdk_nvmf_request_exec_status
+ */
+int spdk_nvmf_ns_identify_iocs_specific(struct spdk_nvmf_ctrlr *ctrlr,
+					struct spdk_nvme_cmd *cmd,
+					struct spdk_nvme_cpl *rsp,
+					struct spdk_nvme_zns_ns_data *cdata);
+
+/**
+ * Fills the I/O Command Set specific Identify Controller data structure (CNS
+ * 06h)
+ *
+ * \param ctrlr The NVMe-oF controller
+ * \param cmd The NVMe command
+ * \param rsp The NVMe command completion
+ * \param cdata The filled in I/O command set specific identify controller
+ * attributes
+ * \return \ref spdk_nvmf_request_exec_status
+ */
+int spdk_nvmf_ctrlr_identify_iocs_specific(
+	struct spdk_nvmf_ctrlr *ctrlr, struct spdk_nvme_cmd *cmd,
+	struct spdk_nvme_cpl *rsp, struct spdk_nvme_zns_ctrlr_data *cdata);
+
+/**
  * Fills the identify namespace attributes for the specified controller
  *
  * \param ctrlr The NVMe-oF controller

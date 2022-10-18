@@ -32,6 +32,7 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "spdk/bdev_zone.h"
 #include "spdk/stdinc.h"
 
 #include "spdk_cunit.h"
@@ -209,6 +210,11 @@ DEFINE_STUB(spdk_nvmf_bdev_ctrlr_nvme_passthru_admin,
 	    0);
 DEFINE_STUB(spdk_bdev_reset, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 				   spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_get_max_zone_append_size, uint32_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_get_max_active_zones, uint32_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_get_max_open_zones, uint32_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_get_zone_size, uint64_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_is_zoned, bool, (const struct spdk_bdev *bdev), false);
 DEFINE_STUB_V(spdk_bdev_free_io, (struct spdk_bdev_io *bdev_io));
 
 int
