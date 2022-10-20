@@ -2429,22 +2429,32 @@ static const struct spdk_nvme_cmds_and_effect_log_page g_cmds_and_effect_log_pag
 		[SPDK_NVME_OPC_DATASET_MANAGEMENT]	= {1, 1, 0, 0, 0, 0, 0, 0},
 		/* COMPARE */
 		[SPDK_NVME_OPC_COMPARE]			= {1, 0, 0, 0, 0, 0, 0, 0},
+		/* ZONE MANAGEMENT SEND */
+		[SPDK_NVME_OPC_ZONE_MGMT_SEND]		= {1, 0, 0, 0, 0, 0, 0, 0},
+		/* ZONE MANAGEMENT RECEIVE */
+		[SPDK_NVME_OPC_ZONE_MGMT_RECV]		= {1, 0, 0, 0, 0, 0, 0, 0},
 	},
 };
 
 static void
-nvmf_get_cmds_and_effects_log_page(struct iovec *iovs, int iovcnt,
+nvmf_get_cmds_and_effects_log_page(struct spdk_nvmf_ctrlr *ctrlr, struct iovec *iovs, int iovcnt,
 				   uint64_t offset, uint32_t length)
 {
 	uint32_t page_size = sizeof(struct spdk_nvme_cmds_and_effect_log_page);
 	size_t copy_len = 0;
 	struct copy_iovs_ctx copy_ctx;
+	struct spdk_nvme_cmds_and_effect_log_page cmds_and_effect_log_page = g_cmds_and_effect_log_page;
+	struct spdk_nvme_cmds_and_effect_entry csupp_and_lbcc_effect_entry = {1, 1, 0, 0, 0, 0, 0, 0};
 
 	_init_copy_iovs_ctx(&copy_ctx, iovs, iovcnt);
 
 	if (offset < page_size) {
+		if (ctrlr->subsys->zone_append_supported) {
+			cmds_and_effect_log_page.io_cmds_supported[SPDK_NVME_OPC_ZONE_APPEND] =
+				csupp_and_lbcc_effect_entry;
+		}
 		copy_len = spdk_min(page_size - offset, length);
-		_copy_buf_to_iovs(&copy_ctx, (char *)(&g_cmds_and_effect_log_page) + offset, copy_len);
+		_copy_buf_to_iovs(&copy_ctx, (char *)(&cmds_and_effect_log_page) + offset, copy_len);
 	}
 }
 
@@ -2582,7 +2592,7 @@ nvmf_ctrlr_get_log_page(struct spdk_nvmf_request *req)
 				goto invalid_log_page;
 			}
 		case SPDK_NVME_LOG_COMMAND_EFFECTS_LOG:
-			nvmf_get_cmds_and_effects_log_page(req->iov, req->iovcnt, offset, len);
+			nvmf_get_cmds_and_effects_log_page(ctrlr, req->iov, req->iovcnt, offset, len);
 			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 		case SPDK_NVME_LOG_CHANGED_NS_LIST:
 			nvmf_get_changed_ns_list_log_page(ctrlr, req->iov, req->iovcnt, offset, len, rae);
@@ -2866,30 +2876,22 @@ spdk_nvmf_ctrlr_identify_iocs_specific(
 	struct spdk_nvmf_ctrlr *ctrlr, struct spdk_nvme_cmd *cmd,
 	struct spdk_nvme_cpl *rsp, struct spdk_nvme_zns_ctrlr_data *cdata)
 {
-
-	// TODO: compare with nvme_ctrlr_identify_iocs_specific(struct spdk_nvme_ctrlr
-	// *ctrlr)
 	uint32_t csi = cmd->cdw11_bits.identify.csi;
 	uint32_t max_zone_append_size = 0;
 	uint8_t zasl = 0;
 
 	switch (csi) {
 	case SPDK_NVME_CSI_ZNS:
-		SPDK_WARNLOG("HERE CSI 0x%02x\n", csi);
-		// In logical blocks (4KiB)
-		max_zone_append_size = ctrlr->subsys->max_zone_append_size;
-		SPDK_NOTICELOG("MZAS: %d.\n", max_zone_append_size);
+		/* The unit of max_zone_append_size is logical blocks */
+		max_zone_append_size = spdk_min(ctrlr->subsys->max_zone_append_size,
+						ctrlr->admin_qpair->transport->opts.max_io_size);
+		/* The unit of zasl is the minimum memory page size (CAP.MPSMIN)
+		and is reported as a power of two (2^n).*/
 		max_zone_append_size >>= ctrlr->vcprop.cap.bits.mpsmin;
-		//TODO: compare with nvme_ctrlr.c line 2070
-		// minimum memory page size (CAP.MPSMIN) and is reported as power of two
-		// (2^n)
-		// TODO: completely right?: max_zone_append_size == 503 will evaluate to
-		// 2^8 = 256
 		while (max_zone_append_size >>= 1) {
 			zasl++;
 		}
 		cdata->zasl = zasl;
-		SPDK_WARNLOG("HERE zasl %d\n", cdata->zasl);
 		break;
 	default:
 		SPDK_DEBUGLOG(nvmf,
@@ -3028,7 +3030,7 @@ nvmf_ctrlr_identify(struct spdk_nvmf_request *req)
 		goto invalid_cns;
 	}
 
-	SPDK_NOTICELOG("Identify command with CNS 0x%02x\n", cns);
+	SPDK_DEBUGLOG("Received identify command with CNS 0x%02x\n", cns);
 	switch (cns) {
 	case SPDK_NVME_IDENTIFY_NS:
 		return spdk_nvmf_ctrlr_identify_ns(ctrlr, cmd, rsp, req->data);

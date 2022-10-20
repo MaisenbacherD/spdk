@@ -1679,6 +1679,8 @@ spdk_nvmf_subsystem_add_ns_ext(struct spdk_nvmf_subsystem *subsystem, const char
 	if (spdk_bdev_is_zoned(ns->bdev)) {
 		SPDK_NOTICELOG("The added namespace is backed by a zoned block device.\n");
 		ns->csi = SPDK_NVME_CSI_ZNS;
+		subsystem->zone_append_supported = spdk_bdev_io_type_supported(ns->bdev,
+						   SPDK_BDEV_IO_TYPE_ZONE_APPEND);
 		subsystem->max_zone_append_size = spdk_bdev_get_max_zone_append_size(ns->bdev);
 	}
 
