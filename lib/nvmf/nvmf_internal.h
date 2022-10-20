@@ -268,6 +268,7 @@ struct spdk_nvmf_subsystem {
 
 	struct spdk_nvmf_tgt				*tgt;
 
+	bool zone_append_supported;
 	uint32_t max_zone_append_size;
 	/* Array of pointers to namespaces of size max_nsid indexed by nsid - 1 */
 	struct spdk_nvmf_ns				**ns;
