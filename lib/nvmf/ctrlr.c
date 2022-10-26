@@ -3030,7 +3030,7 @@ nvmf_ctrlr_identify(struct spdk_nvmf_request *req)
 		goto invalid_cns;
 	}
 
-	SPDK_DEBUGLOG("Received identify command with CNS 0x%02x\n", cns);
+	SPDK_DEBUGLOG(nvmf, "Received identify command with CNS 0x%02x\n", cns);
 	switch (cns) {
 	case SPDK_NVME_IDENTIFY_NS:
 		return spdk_nvmf_ctrlr_identify_ns(ctrlr, cmd, rsp, req->data);
