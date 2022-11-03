@@ -2430,7 +2430,7 @@ static const struct spdk_nvme_cmds_and_effect_log_page g_cmds_and_effect_log_pag
 		/* COMPARE */
 		[SPDK_NVME_OPC_COMPARE]			= {1, 0, 0, 0, 0, 0, 0, 0},
 		/* ZONE MANAGEMENT SEND */
-		[SPDK_NVME_OPC_ZONE_MGMT_SEND]		= {1, 0, 0, 0, 0, 0, 0, 0},
+		[SPDK_NVME_OPC_ZONE_MGMT_SEND]		= {1, 1, 0, 0, 0, 0, 0, 0},
 		/* ZONE MANAGEMENT RECEIVE */
 		[SPDK_NVME_OPC_ZONE_MGMT_RECV]		= {1, 0, 0, 0, 0, 0, 0, 0},
 	},
