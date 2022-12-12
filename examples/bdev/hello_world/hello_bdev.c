@@ -11,6 +11,10 @@
 #include "spdk/log.h"
 #include "spdk/string.h"
 #include "spdk/bdev_zone.h"
+#include "spdk/endian.h"
+#include <unistd.h>
+#include <sys/time.h>
+
 
 static char *g_bdev_name = "Malloc0";
 
@@ -23,7 +27,6 @@ struct hello_context_t {
 	struct spdk_bdev_desc *bdev_desc;
 	struct spdk_io_channel *bdev_io_channel;
 	char *buff;
-	uint32_t buff_size;
 	char *bdev_name;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 };
@@ -80,11 +83,11 @@ hello_read(void *arg)
 {
 	struct hello_context_t *hello_context = arg;
 	int rc = 0;
+	uint32_t length = spdk_bdev_get_block_size(hello_context->bdev);
 
 	SPDK_NOTICELOG("Reading io\n");
 	rc = spdk_bdev_read(hello_context->bdev_desc, hello_context->bdev_io_channel,
-			    hello_context->buff, 0, hello_context->buff_size, read_complete,
-			    hello_context);
+			    hello_context->buff, 0, length, read_complete, hello_context);
 
 	if (rc == -ENOMEM) {
 		SPDK_NOTICELOG("Queueing io\n");
@@ -109,6 +112,7 @@ static void
 write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 {
 	struct hello_context_t *hello_context = cb_arg;
+	uint32_t length;
 
 	/* Complete the I/O */
 	spdk_bdev_free_io(bdev_io);
@@ -124,21 +128,55 @@ write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	}
 
 	/* Zero the buffer so that we can use it for reading */
-	memset(hello_context->buff, 0, hello_context->buff_size);
+	length = spdk_bdev_get_block_size(hello_context->bdev);
+	memset(hello_context->buff, 0, length);
 
 	hello_read(hello_context);
 }
+
+/*
+ * Callback function for write io completion.
+ */
+static void
+io_passthru_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct hello_context_t *hello_context = cb_arg;
+	uint32_t length;
+        struct timeval timer;
+        gettimeofday(&timer, NULL);
+	SPDK_NOTICELOG("Completion %lu\n", timer.tv_sec * 1000000 + timer.tv_usec);
+	/* Complete the I/O */
+	spdk_bdev_free_io(bdev_io);
+
+	if (success) {
+		SPDK_NOTICELOG("bdev io_passthru completed successfully\n");
+		SPDK_NOTICELOG("Buff: %" PRIu64 "\n", hello_context->buff);
+		SPDK_NOTICELOG("Buff from_le64: %" PRIu64 "\n", from_le64(hello_context->buff));
+		SPDK_NOTICELOG("Buff from_le64: %" PRIi64 "\n", from_le64(hello_context->buff));
+		SPDK_NOTICELOG("Buff from_be64: %" PRIu64 "\n", from_be64(hello_context->buff));
+	} else {
+		SPDK_ERRLOG("bdev io passthru error: %d\n", EIO);
+		spdk_put_io_channel(hello_context->bdev_io_channel);
+		spdk_bdev_close(hello_context->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
+        spdk_app_stop(0);
+        return;
+}
+
+
 
 static void
 hello_write(void *arg)
 {
 	struct hello_context_t *hello_context = arg;
 	int rc = 0;
+	uint32_t length = spdk_bdev_get_block_size(hello_context->bdev);
 
 	SPDK_NOTICELOG("Writing to the bdev\n");
 	rc = spdk_bdev_write(hello_context->bdev_desc, hello_context->bdev_io_channel,
-			     hello_context->buff, 0, hello_context->buff_size, write_complete,
-			     hello_context);
+			     hello_context->buff, 0, length, write_complete, hello_context);
 
 	if (rc == -ENOMEM) {
 		SPDK_NOTICELOG("Queueing io\n");
@@ -164,6 +202,57 @@ hello_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
 }
 
 static void
+hello_io_passthru(void *arg)
+{
+	struct hello_context_t *hello_context = arg;
+	int rc = 0;
+        struct spdk_nvme_cmd nvme_cmd = {};
+        uint32_t blk_size = spdk_bdev_get_block_size(hello_context->bdev) * 10000;
+        struct timeval timer;
+        blk_size = 2060288;
+	blk_size = 524288; 
+        nvme_cmd.opc = 122;
+        //.fuse = 0,
+        //.rsvd1 = 0,
+        //nvme_cmd.psdt = 1;
+        //nvme_cmd.cid = 17;
+        nvme_cmd.nsid = 1;
+        //.rsvd2 = 0,
+        //.rsvd3 = 0,
+        //.mptr = 0,
+        //.dptr.prp.prp1 = 0,
+        //.dptr.prp.prp2 = 6485183463413572224,
+        //.dptr.sgl1 = sgl,
+        nvme_cmd.cdw10 = 0;
+        nvme_cmd.cdw11 = 0;
+        nvme_cmd.cdw12 = 14495;
+        nvme_cmd.cdw13 = 65536;
+        nvme_cmd.cdw14 = 0;
+        nvme_cmd.cdw15 = 0;
+	SPDK_NOTICELOG("Attempting to io-passthru\n");
+
+	sleep(2);
+        gettimeofday(&timer, NULL);
+	SPDK_NOTICELOG("Submission %lu\n", timer.tv_sec * 1000000 + timer.tv_usec);
+	rc = spdk_bdev_nvme_io_passthru(hello_context->bdev_desc, hello_context->bdev_io_channel, &nvme_cmd, hello_context->buff, blk_size, io_passthru_complete, hello_context);
+
+	if (rc == -ENOMEM) {
+		SPDK_NOTICELOG("Queueing io\n");
+		/* In case we cannot perform I/O now, queue I/O */
+		hello_context->bdev_io_wait.bdev = hello_context->bdev;
+		hello_context->bdev_io_wait.cb_fn = hello_write;
+		hello_context->bdev_io_wait.cb_arg = hello_context;
+		spdk_bdev_queue_io_wait(hello_context->bdev, hello_context->bdev_io_channel,
+					&hello_context->bdev_io_wait);
+	} else if (rc) {
+		SPDK_ERRLOG("%s error while writing to bdev: %d\n", spdk_strerror(-rc), rc);
+		spdk_put_io_channel(hello_context->bdev_io_channel);
+		spdk_bdev_close(hello_context->bdev_desc);
+		spdk_app_stop(-1);
+	}
+}
+
+static void
 reset_zone_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 {
 	struct hello_context_t *hello_context = cb_arg;
@@ -179,7 +268,8 @@ reset_zone_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 		return;
 	}
 
-	hello_write(hello_context);
+        
+	hello_io_passthru(hello_context);
 }
 
 static void
@@ -214,7 +304,7 @@ static void
 hello_start(void *arg1)
 {
 	struct hello_context_t *hello_context = arg1;
-	uint32_t buf_align;
+	uint32_t blk_size, buf_align;
 	int rc = 0;
 	hello_context->bdev = NULL;
 	hello_context->bdev_desc = NULL;
@@ -254,10 +344,11 @@ hello_start(void *arg1)
 	/* Allocate memory for the write buffer.
 	 * Initialize the write buffer with the string "Hello World!"
 	 */
-	hello_context->buff_size = spdk_bdev_get_block_size(hello_context->bdev) *
-				   spdk_bdev_get_write_unit_size(hello_context->bdev);
+	blk_size = spdk_bdev_get_block_size(hello_context->bdev) * 10000;
+        blk_size = 2060288;
+	blk_size = 524288; 
 	buf_align = spdk_bdev_get_buf_align(hello_context->bdev);
-	hello_context->buff = spdk_dma_zmalloc(hello_context->buff_size, buf_align, NULL);
+	hello_context->buff = spdk_dma_zmalloc(blk_size, buf_align, NULL);
 	if (!hello_context->buff) {
 		SPDK_ERRLOG("Failed to allocate buffer\n");
 		spdk_put_io_channel(hello_context->bdev_io_channel);
@@ -265,9 +356,10 @@ hello_start(void *arg1)
 		spdk_app_stop(-1);
 		return;
 	}
-	snprintf(hello_context->buff, hello_context->buff_size, "%s", "Hello World!\n");
+	//snprintf(hello_context->buff, blk_size, "%s", "Hello World!\n");
 
 	if (spdk_bdev_is_zoned(hello_context->bdev)) {
+		SPDK_ERRLOG("DENNIS DEBUG: IN THE ZONED CASE with blk_size %u\n", blk_size);
 		hello_reset_zone(hello_context);
 		/* If bdev is zoned, the callback, reset_zone_complete, will call hello_write() */
 		return;
